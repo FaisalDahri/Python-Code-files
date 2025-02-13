@@ -1,0 +1,69 @@
+from pyspark.sql import SparkSession
+from pyspark.ml import Pipeline
+from pyspark.ml.feature import VectorAssembler, StringIndexer
+from pyspark.ml.regression import RandomForestRegressor
+from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.sql.functions import col, unix_timestamp
+from pyspark.sql.types import DoubleType, IntegerType
+import matplotlib.pyplot as plt
+
+spark = SparkSession.builder \
+    .appName("NYC Taxi Fare Prediction") \
+    .getOrCreate()
+
+data_path = "gs://ny-taxi_dataset/archive/yellow_tripdata_2015-01.csv"
+df = spark.read.option("header", "true").csv(data_path, inferSchema=True)
+
+df = df.withColumn("passenger_count", col("passenger_count").cast(IntegerType()))
+df = df.withColumn("trip_distance", col("trip_distance").cast(DoubleType()))
+df = df.withColumn("pickup_longitude", col("pickup_longitude").cast(DoubleType()))
+df = df.withColumn("pickup_latitude", col("pickup_latitude").cast(DoubleType()))
+df = df.withColumn("dropoff_longitude", col("dropoff_longitude").cast(DoubleType()))
+df = df.withColumn("dropoff_latitude", col("dropoff_latitude").cast(DoubleType()))
+df = df.withColumn("extra", col("extra").cast(DoubleType()))
+df = df.withColumn("mta_tax", col("mta_tax").cast(DoubleType()))
+df = df.withColumn("tip_amount", col("tip_amount").cast(DoubleType()))
+df = df.withColumn("tolls_amount", col("tolls_amount").cast(DoubleType()))
+df = df.withColumn("improvement_surcharge", col("improvement_surcharge").cast(DoubleType()))
+df = df.withColumn("fare_amount", col("fare_amount").cast(DoubleType()))
+
+df = df.dropna()
+
+df = df.withColumn("pickup_hour", (unix_timestamp("tpep_pickup_datetime") / 3600).cast("int"))
+df = df.withColumn("pickup_dayofweek", (unix_timestamp("tpep_pickup_datetime") / 86400 % 7).cast("int"))
+df = df.withColumn("pickup_weekday", (unix_timestamp("tpep_pickup_datetime") / 86400 % 7).cast("int"))
+
+assembler = VectorAssembler(
+    inputCols=[
+        "pickup_hour", "pickup_dayofweek", "pickup_weekday",
+        "passenger_count", "trip_distance", "pickup_longitude", "pickup_latitude",
+        "dropoff_longitude", "dropoff_latitude", "extra", "mta_tax", "tip_amount", 
+        "tolls_amount", "improvement_surcharge"
+    ],
+    outputCol="features"
+)
+
+rf = RandomForestRegressor(featuresCol="features", labelCol="fare_amount")
+
+pipeline = Pipeline(stages=[indexer_vendor, indexer_ratecode, indexer_payment, assembler, rf])
+
+train_df, test_df = df.randomSplit([0.8, 0.2], seed=1234)
+
+model = pipeline.fit(train_df)
+predictions = model.transform(test_df)
+
+evaluator = RegressionEvaluator(labelCol="fare_amount", predictionCol="prediction", metricName="rmse")
+rmse = evaluator.evaluate(predictions)
+print(f"Root Mean Squared Error (RMSE): {rmse}")
+
+evaluator_r2 = RegressionEvaluator(labelCol="fare_amount", predictionCol="prediction", metricName="r2")
+r2 = evaluator_r2.evaluate(predictions)
+print(f"R2: {r2}")
+
+model_output_path = "gs://ny-taxi_dataset/train-model-output"
+model.write().overwrite().save(model_output_path)
+
+predictions_output_path = "gs://ny-taxi_dataset/predictions-output"
+predictions.select("fare_amount", "prediction").write.option("header", "true").csv(predictions_output_path)
+
+spark.stop()
