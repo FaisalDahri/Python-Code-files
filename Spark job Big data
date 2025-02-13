@@ -1,0 +1,45 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, to_timestamp, unix_timestamp, month, year
+
+spark = SparkSession.builder \
+    .appName("NYC Taxi Data Analysis") \
+    .getOrCreate()
+
+df = spark.read.csv("gs://ny-taxi_dataset/archive/*.csv", header=True, inferSchema=True)
+
+# Changing data time format
+df = df.withColumn("tpep_pickup_datetime", to_timestamp(col("tpep_pickup_datetime"), "yyyy-MM-dd HH:mm:ss")) \
+       .withColumn("tpep_dropoff_datetime", to_timestamp(col("tpep_dropoff_datetime"), "yyyy-MM-dd HH:mm:ss"))
+
+# Handiling Null Values
+df = df.dropna()
+
+# Performing EDA
+df.printSchema()
+df.show(5)
+
+df.describe().show()
+
+# Calculate trip duration
+df = df.withColumn("trip_duration", 
+                  (unix_timestamp("tpep_dropoff_datetime") - unix_timestamp("tpep_pickup_datetime")) / 60)
+
+# Calculating average fare amount
+df_avg_fare = df.groupBy("payment_type").agg({"fare_amount": "avg"})
+df_avg_fare.show()
+
+df_avg_fare.write.parquet("gs://ny-taxi_dataset/output/avg_fare_by_payment_type.parquet")
+
+# Calculatting total fare per month
+df_monthly = df.withColumn("month", month("tpep_pickup_datetime")) \
+               .withColumn("year", year("tpep_pickup_datetime")) \
+               .groupBy("year", "month", "payment_type") \
+               .agg({"total_amount": "sum"})
+
+df_monthly.show()
+
+df_monthly.write.parquet("gs://ny-taxi_dataset/output/monthly_total_fare.parquet")
+
+df.write.parquet("gs://ny-taxi_dataset/output/data_with_trip_duration.parquet")
+
+spark.stop()
